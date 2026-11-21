@@ -132,8 +132,11 @@ assert.strictEqual(cell(2, MC), ymLabel(R.months[0]));
 assert.strictEqual(cell(3, MC), '先月（n-1）');
 assert.strictEqual(cell(3, MC + 1), '今月');
 assert.strictEqual(cell(3, MC + 2), 'n+1月');
-var fiscalCols = []; for (var j = 0; j < 19; j++) if (cell(1, MC + j) === '決算月') fiscalCols.push(R.months[j].slice(5));
+var fiscalCols = []; for (var j = 0; j < 19; j++) if (cell(1, MC + j) === '▼決算月▼') fiscalCols.push(R.months[j].slice(5));
 assert.ok(fiscalCols.length >= 1 && fiscalCols.every(function (m) { return m === '03'; }));
+var fiscalCol = MC + R.months.map(function (m) { return m.slice(5); }).indexOf('03');
+assert.strictEqual(sheets['シミュレーター'].backgrounds[0][fiscalCol - 1], null);   // 塗りつぶしなし
+assert.strictEqual(sheets['シミュレーター'].fontColors[0][fiscalCol - 1], '#ff0000'); // 赤の文字
 function ymLabel(ym) { return ym.slice(0, 4) + '年' + Number(ym.slice(5, 7)) + '月'; }
 console.log('  ok  見出し：年月・相対ラベル（先月/今月/n+k月）・決算月の印');
 

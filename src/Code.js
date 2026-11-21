@@ -380,7 +380,7 @@ function renderGrid_(ss, R) {
       // C1 にはロゴ画像（クリックで再計算）を重ねる。文字は入れない
       for (j = 0; j < M; j++) {
         if (Number(R.months[j].slice(5, 7)) === R.params.fiscalEndMonth) {
-          v[F - 1 + j] = '決算月'; b[F - 1 + j] = COLOR.fiscal; fc[F - 1 + j] = '#ffffff'; w[F - 1 + j] = 'bold';
+          v[F - 1 + j] = '▼決算月▼'; fc[F - 1 + j] = COLOR.fiscal; w[F - 1 + j] = 'bold'; // 塗りつぶしなし・赤の太字
         }
       }
       f = fill('@');
@@ -511,6 +511,7 @@ function renderGrid_(ss, R) {
     sh.setFrozenColumns(GRID.CHECK_COL);
     props.setProperty('gridSig', sig);
   }
+  sh.getRange(1, F, 1, M).setHorizontalAlignment('center').setVerticalAlignment('bottom'); // 決算月の印：横中央・下揃え
   ensureLogo_(sh);
   return { sumRow: sumRow, secInfo: secInfo };
 }
