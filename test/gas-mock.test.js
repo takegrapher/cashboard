@@ -378,8 +378,6 @@ assert.strictEqual(info.to, next);
 assert.ok(info.openings.length === 2 && info.openings[0].key === 'K01');
 assert.ok(info.last.some(function (x) { return x.key === 'I040' && x.editable; }));
 assert.ok(info.last.some(function (x) { return x.kind === 'sys' && !x.editable; }));
-var html = vm.runInContext('monthStartHtml_', ctx)(info);
-assert.ok(/月初処理を実行/.test(html) && /applyMonthStart/.test(html));
 var before = compute();
 var nowVals = {};
 before.rows.forEach(function (r) { nowVals[r.key] = r.values[1]; });
@@ -412,4 +410,33 @@ var compute2 = compute();
 ctx.menuRecalc();
 assert.strictEqual(compute().totals.fc[18], compute2.totals.fc[18]);
 console.log('  ok  月初処理のあとの再計算で値が変わらない（差分取り込みが誤検出しない）');
+
+// ---- メニュー「月初処理」：確認・入力はスクリプト側の画面（ui.alert / ui.prompt）。HTMLダイアログ（google.script.run）は使わない
+function fakeUi(script) {
+  var log = [];
+  var ui = {
+    ButtonSet: { YES_NO: 'YES_NO', OK_CANCEL: 'OK_CANCEL', OK: 'OK' }, Button: { YES: 'YES', NO: 'NO', OK: 'OK', CANCEL: 'CANCEL' },
+    alert: function (a, b) { var m = b || a; log.push(m); return /続けますか|実行しますか/.test(m) ? script.shift() : 'OK'; },
+    prompt: function (t, m) { log.push(m); var x = script.shift(); return { getSelectedButton: function () { return x === null ? 'CANCEL' : 'OK'; }, getResponseText: function () { return x || ''; } }; }
+  };
+  return { ui: ui, log: log };
+}
+var realGetUi = ctx.SpreadsheetApp.getUi;
+var baseB = compute().base;
+var f1 = fakeUi(['NO']);
+ctx.SpreadsheetApp.getUi = function () { return f1.ui; };
+ctx.menuMonthStart();
+assert.strictEqual(compute().base, baseB);                                  // 「いいえ」なら何も変えない
+var f2 = fakeUi(['YES', 'abc', '１２３，０００円', '', 'YES']);
+ctx.SpreadsheetApp.getUi = function () { return f2.ui; };
+ctx.menuMonthStart();
+ctx.SpreadsheetApp.getUi = realGetUi;
+var R5 = compute();
+assert.strictEqual(R5.base, vm.runInContext('CFEngine.addMonths', ctx)(baseB, 1));
+assert.ok(f2.log.some(function (m) { return /数値として読めませんでした/.test(m); }));   // 数値以外は聞き直す
+assert.strictEqual(R5.rows.filter(function (r) { return r.key === 'K01'; })[0].values[0], 123000);
+assert.strictEqual(R5.rows.filter(function (r) { return r.key === 'K02'; })[0].values[0], 400000); // 空欄＝処理前の値のまま
+assert.ok(/月初処理が完了しました/.test(f2.log[f2.log.length - 1]));
+assert.ok(!/google\.script\.run\(/.test(require('fs').readFileSync(require('path').join(src, 'Code.js'), 'utf8')));
+console.log('  ok  メニュー「月初処理」：確認→口座ごとの残高入力（数値以外は聞き直し、空欄は処理前の値）→最終確認→実行。いいえ／キャンセルなら何も変えない');
 console.log('\nall passed');

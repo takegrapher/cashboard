@@ -800,7 +800,7 @@ function handleDashEdit_(e) {
  *   2) 月初残高（今月初の実際の残高）をユーザーが入力する
  *   3) 基準月を1か月進める（年月の見出しがすべて＋1か月）
  *   4) 新しく増える最終月（AE列）は各項目のルール（固定額・人件費・連動・比率など）で推計する。
- *      ダイアログで行ごとに値を直すこともでき、直した値は「上書き」として保存する
+ *      処理のあとシミュレーター上で直接直せる（直した値は「上書き」として保存される）
  */
 
 /** パラメータ「基準月」が空欄なら、今日の月で固定する（カレンダーが変わっても勝手に進まないように） */
@@ -860,64 +860,64 @@ function monthStartInfo_() {
   };
 }
 
+/**
+ * メニュー「月初処理」。確認・入力はすべてスクリプト側の画面（ui.alert / ui.prompt）で行う。
+ * ※ HTMLダイアログのボタンからスクリプトを呼ぶ方式（google.script.run）は、ブラウザで複数の
+ *   Googleアカウントにログインしていると PERMISSION_DENIED で失敗するため使わない。
+ */
 function menuMonthStart() {
   var ui = SpreadsheetApp.getUi();
   var info;
   try { info = monthStartInfo_(); } catch (err) { ui.alert(String(err && err.message || err)); return; }
-  var html = HtmlService.createHtmlOutput(monthStartHtml_(info)).setWidth(760).setHeight(640);
-  ui.showModalDialog(html, '月初処理：' + info.fromLabel + ' → ' + info.toLabel);
+  var fmt = function (n) { return Number(n).toLocaleString('ja-JP'); };
+  var title = '月初処理：' + info.fromLabel + ' → ' + info.toLabel;
+
+  // 1) 確認
+  var msg = '今月を ' + info.fromLabel + ' から ' + info.toLabel + ' に進めます。\n\n' +
+    '・今月（N列）の値を「実績」として確定し、先月（M列）に移します\n' +
+    '・年月の見出しがすべて1か月進みます\n' +
+    '・新しい最終月（' + info.lastLabel + '）は各項目のルール（固定額・人件費・連動・比率など）で推計します\n' +
+    '　（推計値は、処理のあとシミュレーター上で直接直せます。直した値は「上書き」になります）\n' +
+    '・次の画面で、口座ごとの月初残高（' + info.toLabel + '初時点の実際の残高）を入力します\n';
+  if (info.to > info.calendar) msg += '\n⚠ カレンダー上の今月（' + ymLabel_(info.calendar) + '）より先の月に進めようとしています。月が替わってから実行するのが通常です。\n';
+  msg += '\n続けますか？';
+  if (ui.alert(title, msg, ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+
+  // 2) 月初残高の入力（口座ごと）
+  var openings = [];
+  for (var i = 0; i < info.openings.length; i++) {
+    var o = info.openings[i], value = null, note = '';
+    while (value === null) {
+      var res = ui.prompt(title + '（月初残高 ' + (i + 1) + '/' + info.openings.length + '）',
+        note + o.account + '：' + o.name + (o.included ? '' : '（計上✗）') + '\n\n' +
+        info.toLabel + '初時点の実際の残高を「円」で入力してください。\n' +
+        '処理前の値：' + fmt(o.amount) + ' 円\n' +
+        '（参考：シミュレーター上の見込み 現金・預金合計 ' + fmt(info.estimate) + ' 円）\n\n' +
+        '空欄のまま OK を押すと、処理前の値をそのまま使います。', ui.ButtonSet.OK_CANCEL);
+      if (res.getSelectedButton() !== ui.Button.OK) { ui.alert('月初処理を中止しました（何も変更していません）'); return; }
+      var t = String(res.getResponseText()).replace(/[,，\s円]/g, '').replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+      if (t === '') value = o.amount;
+      else if (/^-?\d+(\.\d+)?$/.test(t)) value = Math.round(Number(t));
+      else note = '⚠ 数値として読めませんでした：「' + res.getResponseText() + '」\n\n';
+    }
+    openings.push({ key: o.key, amount: value, label: o.name });
+  }
+
+  // 3) 最終確認
+  var sum = '次の内容で実行します。\n\n今月：' + info.fromLabel + ' → ' + info.toLabel + '\n\n月初残高：\n' +
+    openings.map(function (x) { return '　' + x.label + '：' + fmt(x.amount) + ' 円'; }).join('\n') +
+    '\n\nこの処理は元に戻せません（明細シートに実績行が追加され、基準月が進みます）。実行しますか？';
+  if (ui.alert(title, sum, ui.ButtonSet.YES_NO) !== ui.Button.YES) { ui.alert('月初処理を中止しました（何も変更していません）'); return; }
+
+  try {
+    var done = applyMonthStart({ from: info.from, openings: openings, last: [] });
+    ui.alert(title, done + '\n\n新しい最終月（' + info.lastLabel + '）の値は、シミュレーター上で直接直せます。', ui.ButtonSet.OK);
+  } catch (err) {
+    ui.alert('月初処理に失敗しました：' + String(err && err.message || err));
+  }
 }
 
-function esc_(s) {
-  return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function monthStartHtml_(info) {
-  var early = info.to > info.calendar;
-  var h = [];
-  h.push('<style>body{font-family:Arial,"Noto Sans JP",sans-serif;font-size:13px;margin:0;padding:4px 8px}',
-    'h3{font-size:14px;margin:14px 0 6px;border-left:4px solid #cc0000;padding-left:6px}',
-    'table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:3px 6px}th{background:#f3f3f3;text-align:left}',
-    'input{width:130px;text-align:right;font-size:13px}.n{text-align:right}.note{color:#555;font-size:12px;margin:4px 0}',
-    '.warn{color:#cc0000;font-weight:bold}.btns{position:sticky;bottom:0;background:#fff;padding:10px 0;text-align:right;border-top:1px solid #ddd}',
-    'button{font-size:13px;padding:6px 16px;margin-left:8px}#run{background:#cc0000;color:#fff;border:0;border-radius:4px}',
-    '.sec td{background:#fafafa;font-weight:bold}</style>');
-  h.push('<div class="note">今月を <b>' + esc_(info.fromLabel) + '</b> から <b>' + esc_(info.toLabel) + '</b> に進めます。',
-    '年月の見出しはすべて1か月進み、処理前の今月（N列）の値は「実績」として確定して先月（M列）に入ります。</div>');
-  if (early) h.push('<div class="warn">カレンダー上の今月（' + esc_(ymLabel_(info.calendar)) + '）より先の月に進めようとしています。月が替わってから実行するのが通常です。</div>');
-
-  h.push('<h3>1. 月初残高（' + esc_(info.toLabel) + '初時点の実際の残高、円）</h3>');
-  h.push('<div class="note">口座ごとに、今の時点の残高を入力してください。シミュレーター上の見込み（現金・預金の合計）：<b>',
-    Number(info.estimate).toLocaleString('ja-JP') + ' 円</b></div>');
-  h.push('<table><tr><th>科目</th><th>口座・項目</th><th class="n">処理前の値</th><th class="n">月初残高（円）</th></tr>');
-  info.openings.forEach(function (o, i) {
-    h.push('<tr><td>' + esc_(o.account) + '</td><td>' + esc_(o.name) + (o.included ? '' : '（計上✗）') + '</td><td class="n">' +
-      Number(o.amount).toLocaleString('ja-JP') + '</td><td class="n"><input type="number" step="1" id="op' + i + '" value="' + o.amount + '"></td></tr>');
-  });
-  h.push('</table>');
-
-  h.push('<h3>2. 新しい最終月（' + esc_(info.lastLabel) + '）の値（' + esc_(info.unit) + '）</h3>');
-  h.push('<div class="note">各項目のルール（固定額・人件費・連動・比率など）から推計した値です。必要な行だけ直してください（直した値は「上書き」として保存されます）。自動計算の行は参考表示です。</div>');
-  h.push('<table><tr><th>区分</th><th>科目</th><th>項目</th><th class="n">' + esc_(info.lastLabel) + '</th></tr>');
-  var sec = '';
-  info.last.forEach(function (x, i) {
-    if (x.section !== sec) { sec = x.section; h.push('<tr class="sec"><td colspan="4">' + esc_(sec) + '</td></tr>'); }
-    h.push('<tr><td>' + (x.kind === 'gen' ? '連動' : x.kind === 'sys' ? '自動計算' : '明細項目') + '</td><td>' + esc_(x.account) + '</td><td>' + esc_(x.name) + '</td><td class="n">' +
-      (x.editable ? '<input type="number" step="any" id="ls' + i + '" value="' + x.value + '">' : Number(x.value).toLocaleString('ja-JP')) + '</td></tr>');
-  });
-  h.push('</table>');
-  h.push('<div class="btns"><span id="msg" class="note"></span><button onclick="google.script.host.close()">キャンセル</button><button id="run" onclick="run()">月初処理を実行</button></div>');
-  h.push('<script>var INFO=' + JSON.stringify(info).replace(/</g, '\\u003c') + ';',
-    'function run(){var b=document.getElementById("run");b.disabled=true;document.getElementById("msg").textContent="処理中…（30秒ほどかかります）";',
-    'var p={from:INFO.from,openings:[],last:[]};',
-    'for(var i=0;i<INFO.openings.length;i++){var v=document.getElementById("op"+i).value;if(v===""){alert("月初残高を入力してください："+INFO.openings[i].name);b.disabled=false;return;}p.openings.push({key:INFO.openings[i].key,amount:Number(v)});}',
-    'for(var j=0;j<INFO.last.length;j++){var e=document.getElementById("ls"+j);if(!e)continue;var w=e.value;if(w!==""&&Number(w)!==INFO.last[j].value)p.last.push({key:INFO.last[j].key,value:Number(w)});}',
-    'google.script.run.withSuccessHandler(function(m){alert(m);google.script.host.close();}).withFailureHandler(function(e){alert(e.message||e);b.disabled=false;document.getElementById("msg").textContent="";}).applyMonthStart(p);}',
-    '</script>');
-  return h.join('');
-}
-
-/** ダイアログの「月初処理を実行」から呼ばれる */
+/** 月初処理の本体（menuMonthStart から呼ぶ。p.last で最終月の上書きも渡せる） */
 function applyMonthStart(p) {
   var ss = SpreadsheetApp.getActive();
   var lock = LockService.getDocumentLock();
