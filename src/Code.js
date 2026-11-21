@@ -8,6 +8,7 @@
  *   I: 構成比  J: 合計（今月〜）  K: 計上（✔/✗）  L: キー（非表示）  M〜: 月（先月・今月・n+1〜n+17月）
  */
 
+var APP_NAME = 'cashboard';
 var SHEET = {
   GRID: 'シミュレーター',
   DASH: 'ダッシュボード',
@@ -34,8 +35,9 @@ var FONT = { auto: '#000000', input: '#0000ff' }; // 自動計算の行＝黒、
 
 // ================================================================ メニュー・トリガー
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('キャッシュ・シミュレーター')
+  SpreadsheetApp.getUi().createMenu(APP_NAME)
     .addItem('再計算', 'menuRecalc')
+    .addItem('月初処理（1か月進める）…', 'menuMonthStart')
     .addItem('選択セルの内訳を表示', 'showBreakdown')
     .addItem('スナップショットを保存', 'saveSnapshot')
     .addItem('警告を表示', 'showWarnings')
@@ -83,7 +85,7 @@ function markDirty_(ss) {
 function menuRecalc() {
   var ss = SpreadsheetApp.getActive();
   var ok = runRecalc_(60000);
-  ss.toast(ok ? '再計算しました' : '自動再計算が実行中です。終わり次第反映されます', 'キャッシュ・シミュレーター', 4);
+  ss.toast(ok ? '再計算しました' : '自動再計算が実行中です。終わり次第反映されます', APP_NAME, 4);
 }
 
 /** 時間トリガー（1分ごと）から呼ばれる自動再計算 */
@@ -226,6 +228,7 @@ function loadData_(ss) {
 
 function recalc_() {
   var ss = SpreadsheetApp.getActive();
+  pinBaseMonth_(ss);
   captureGridEdits_(ss);
   var R = CFEngine.compute(loadData_(ss));
   var props = PropertiesService.getDocumentProperties();
@@ -294,7 +297,7 @@ function renderGrid_(ss, R) {
   function add(d) { d.r = rows.length + 1; rows.push(d); return d; }
   add({ t: 'h1' }); add({ t: 'h2' }); add({ t: 'h3' });
   var SUMS = [
-    ['fc', 3, '正味フリーキャッシュ', '月末時点の現金・預金＋現金同等物'],
+    ['fc', 3, '正味フリーキャッシュ', '月末時点の現金・預金＋現金同等物（先月の列＝月初残高＝今月初の実際の残高）'],
     ['fcEq', 4, '出資除く正味フリーキャッシュ', '表示期間内のEquity調達額（累計）を除いた場合'],
     ['fcEqDebt', 4, '出資・融資除く正味フリーキャッシュ', '表示期間内のEquity・Debt調達額（累計）を除いた場合'],
     ['out', 3, '出金合計', '計上✔の出金の単月合計'],
@@ -337,7 +340,8 @@ function renderGrid_(ss, R) {
   function plus(list, j) { return list.length ? list.map(function (d) { return L(j) + d.r; }).join('+') : '0'; }
   function majorsOf(sec) { return secInfo[sec] ? secInfo[sec].majors : []; }
   function inMinors(fin) { return secInfo['入金'] ? secInfo['入金'].minors.filter(function (n) { return n.acc.finance === fin; }) : []; }
-  function cum(list, j) { return list.length ? list.map(function (d) { return 'SUM($' + firstL + d.r + ':' + L(j) + d.r + ')'; }).join('+') : '0'; }
+  // 累計は今月から（先月の入出金は月初残高に反映済み）
+  function cum(list, j) { return list.length && j > 0 ? list.map(function (d) { return 'SUM($' + nowL + d.r + ':' + L(j) + d.r + ')'; }).join('+') : '0'; }
   var openMajors = majorsOf('月初残高');
   var openRef = openMajors.length ? '(' + openMajors.map(function (d) { return '$' + firstL + '$' + d.r; }).join('+') + ')' : String(R.totals.opening[0] / S);
   var rIn = sumRow['in'].r, rOut = sumRow['out'].r, rFc = sumRow['fc'].r, rBurn = sumRow['burn'].r;
@@ -348,7 +352,7 @@ function renderGrid_(ss, R) {
       case 'out': return '=' + plus(majorsOf('出金'), j);
       case 'inEq': return '=' + c + rIn + '-(' + plus(inMinors('出資'), j) + ')';
       case 'inEqDebt': return '=' + c + rIn + '-(' + plus(inMinors('出資'), j) + ')-(' + plus(inMinors('融資'), j) + ')';
-      case 'fc': return '=' + openRef + '+SUM($' + firstL + rIn + ':' + c + rIn + ')-SUM($' + firstL + rOut + ':' + c + rOut + ')+(' + plus(majorsOf('現金同等物'), j) + ')';
+      case 'fc': return '=' + openRef + (j > 0 ? '+SUM($' + nowL + rIn + ':' + c + rIn + ')-SUM($' + nowL + rOut + ':' + c + rOut + ')' : '') + '+(' + plus(majorsOf('現金同等物'), j) + ')';
       case 'fcEq': return '=' + c + rFc + '-(' + cum(inMinors('出資'), j) + ')';
       case 'fcEqDebt': return '=' + c + rFc + '-(' + cum(inMinors('出資'), j) + ')-(' + cum(inMinors('融資'), j) + ')';
       case 'burn':
@@ -373,8 +377,7 @@ function renderGrid_(ss, R) {
     var j;
     v[GRID.KEY_COL - 1] = '';
     if (d.t === 'h1') {
-      v[2] = 'フリーキャッシュ・シミュレーター';
-      w[2] = 'bold';
+      // C1 にはロゴ画像（クリックで再計算）を重ねる。文字は入れない
       for (j = 0; j < M; j++) {
         if (Number(R.months[j].slice(5, 7)) === R.params.fiscalEndMonth) {
           v[F - 1 + j] = '決算月'; b[F - 1 + j] = COLOR.fiscal; fc[F - 1 + j] = '#ffffff'; w[F - 1 + j] = 'bold';
@@ -383,8 +386,10 @@ function renderGrid_(ss, R) {
       f = fill('@');
     } else if (d.t === 'h2' || d.t === 'h3') {
       if (d.t === 'h2') {
-        v[4] = '最終計算 ' + nowTime + (R.warnings.length ? '　⚠ 警告 ' + R.warnings.length + ' 件' : '');
-        fc[4] = '#666666';
+        var cal = todayYm_(ss);
+        v[4] = '最終計算 ' + nowTime + (R.warnings.length ? '　⚠ 警告 ' + R.warnings.length + ' 件' : '') +
+          (R.base < cal ? '　⚠ 月初処理が未実施です（カレンダー上の今月：' + ymLabel_(cal) + '）' : '');
+        fc[4] = R.base < cal ? '#cc0000' : '#666666';
       }
       if (d.t === 'h3') {
         v[4] = S === 1000 ? 'K JPY' : 'JPY';
@@ -494,7 +499,7 @@ function renderGrid_(ss, R) {
     sh.setRowGroupControlPosition(SpreadsheetApp.GroupControlTogglePosition.BEFORE);
     groups.forEach(function (g) { sh.getRange(g[0], 1, g[1], 1).shiftRowGroupDepth(1); });
     drawBorders_(sh, rows, bands, W);
-    sh.getRange(1, 3).setFontSize(13);
+    sh.setRowHeight(1, 46);
     sh.getRange(2, F, 2, M).setHorizontalAlignment('center');
     sh.showColumns(1, sh.getMaxColumns()); // 以前のレイアウトで非表示にした列をいったん戻す
     var widths = [16, 26, 18, 18, 250, 300, 140, 90, 60, 95, 40, 60];
@@ -506,7 +511,31 @@ function renderGrid_(ss, R) {
     sh.setFrozenColumns(GRID.CHECK_COL);
     props.setProperty('gridSig', sig);
   }
+  ensureLogo_(sh);
   return { sumRow: sumRow, secInfo: secInfo };
+}
+
+/**
+ * C1 にロゴ画像を置く（クリックするとメニュー「再計算」と同じ処理が動く）。
+ * レイアウトを作り直すと行ごと消えることがあるので、描画のたびに有無を確かめて足りなければ置き直す。
+ */
+var LOGO = { ALT: 'cashboard_logo', W: 210, H: 45 };
+function ensureLogo_(sh) {
+  if (typeof CF_LOGO_JPEG_B64 === 'undefined') return;
+  var found = (sh.getImages ? sh.getImages() : []).filter(function (im) {
+    try { return im.getAltTextTitle() === LOGO.ALT; } catch (x) { return false; }
+  });
+  found.slice(1).forEach(function (im) { im.remove(); }); // 重複していたら1つにする
+  if (found.length) {
+    var a = found[0].getAnchorCell();
+    if (a.getRow() === 1 && a.getColumn() === 3) return;
+    found[0].remove();
+  }
+  var blob = Utilities.newBlob(Utilities.base64Decode(CF_LOGO_JPEG_B64), 'image/jpeg', 'cashboard_logo.jpg');
+  var img = sh.insertImage(blob, 3, 1, 2, 1);
+  img.setAltTextTitle(LOGO.ALT).setAltTextDescription('クリックすると再計算します');
+  img.setWidth(LOGO.W).setHeight(LOGO.H);
+  img.assignScript('menuRecalc');
 }
 
 /**
@@ -760,6 +789,209 @@ function handleDashEdit_(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ================================================================ 月初処理（表を1か月進める）
+/*
+ * 「今月」はパラメータ「基準月」で決まる。カレンダーの月が変わっても勝手には進まず、
+ * メニュー「月初処理」を実行したときだけ1か月進める。
+ *   1) 今月（N列）の値を、その月の実績として確定する（明細シートに「実績」を追加）
+ *        → 進めたあとの先月（M列）には、処理前のN列の値がそのまま入る
+ *   2) 月初残高（今月初の実際の残高）をユーザーが入力する
+ *   3) 基準月を1か月進める（年月の見出しがすべて＋1か月）
+ *   4) 新しく増える最終月（AE列）は各項目のルール（固定額・人件費・連動・比率など）で推計する。
+ *      ダイアログで行ごとに値を直すこともでき、直した値は「上書き」として保存する
+ */
+
+/** パラメータ「基準月」が空欄なら、今日の月で固定する（カレンダーが変わっても勝手に進まないように） */
+function pinBaseMonth_(ss) {
+  var sh = ss.getSheetByName('パラメータ');
+  if (!sh || sh.getLastRow() < 1) return;
+  var values = sh.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim() !== '基準月') continue;
+    if (CFEngine.normalizeYm(values[i][1])) return;
+    sh.getRange(i + 1, 2).setNumberFormat('@').setValue(todayYm_(ss));
+    return;
+  }
+  var last = sh.getLastRow() + 1;
+  sh.getRange(last, 1, 1, 3).setValues([['基準月', '', '「今月」とする月（YYYY-MM）。メニュー「月初処理」で1か月ずつ進める']]);
+  sh.getRange(last, 2).setNumberFormat('@').setValue(todayYm_(ss));
+}
+
+function setBaseMonth_(ss, ym) {
+  var sh = ss.getSheetByName('パラメータ');
+  var values = sh.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim() === '基準月') { sh.getRange(i + 1, 2).setNumberFormat('@').setValue(ym); return; }
+  }
+  throw new Error('パラメータシートに「基準月」の行がありません');
+}
+
+/** 今月の値を実績として確定する対象（ユーザーが入力する明細項目と連動行。比率・自動計算・月初残高は除く） */
+function freezableRow_(r) {
+  if (r.section === '月初残高') return false;
+  return (r.kind === 'item' && r.calcType !== '比率') || r.kind === 'gen';
+}
+
+/** ダイアログに出す内容を作る（処理前に一度再計算して、未反映の編集を取り込んでおく） */
+function monthStartInfo_() {
+  var ss = SpreadsheetApp.getActive();
+  if (!runRecalc_(60000)) throw new Error('再計算が実行中です。少し待ってからもう一度実行してください');
+  var data = loadData_(ss);
+  var R = CFEngine.compute(data);
+  var next = CFEngine.addMonths(R.base, 1);
+  var S = R.params.displayUnit || 1;
+  data.params['基準月'] = next;
+  var N = CFEngine.compute(data); // 進めたあとの姿（新しい最終月の推計値を出すため）
+  var lastYm = N.months[N.months.length - 1];
+  var T = R.totals;
+  return {
+    from: R.base, to: next, fromLabel: ymLabel_(R.base), toLabel: ymLabel_(next), lastLabel: ymLabel_(lastYm),
+    calendar: todayYm_(ss), unit: S === 1000 ? '千円' : '円', S: S,
+    estimate: Math.round(T.closing[1]), // シミュレーター上の今月末（＝来月初）の現金・預金の見込み
+    openings: R.rows.filter(function (r) { return r.section === '月初残高'; }).map(function (r) {
+      return { key: r.key, name: r.itemName, account: r.accountName, amount: Math.round(r.values[0]), included: r.included };
+    }),
+    last: N.rows.filter(function (r) { return freezableRow_(r) || r.kind === 'sys'; }).map(function (r) {
+      return { key: r.key, name: r.itemName, account: r.accountName, section: r.section, kind: r.kind,
+        value: Math.round(r.values[r.values.length - 1] / S * 1000) / 1000, editable: r.kind !== 'sys' };
+    })
+  };
+}
+
+function menuMonthStart() {
+  var ui = SpreadsheetApp.getUi();
+  var info;
+  try { info = monthStartInfo_(); } catch (err) { ui.alert(String(err && err.message || err)); return; }
+  var html = HtmlService.createHtmlOutput(monthStartHtml_(info)).setWidth(760).setHeight(640);
+  ui.showModalDialog(html, '月初処理：' + info.fromLabel + ' → ' + info.toLabel);
+}
+
+function esc_(s) {
+  return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function monthStartHtml_(info) {
+  var early = info.to > info.calendar;
+  var h = [];
+  h.push('<style>body{font-family:Arial,"Noto Sans JP",sans-serif;font-size:13px;margin:0;padding:4px 8px}',
+    'h3{font-size:14px;margin:14px 0 6px;border-left:4px solid #cc0000;padding-left:6px}',
+    'table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:3px 6px}th{background:#f3f3f3;text-align:left}',
+    'input{width:130px;text-align:right;font-size:13px}.n{text-align:right}.note{color:#555;font-size:12px;margin:4px 0}',
+    '.warn{color:#cc0000;font-weight:bold}.btns{position:sticky;bottom:0;background:#fff;padding:10px 0;text-align:right;border-top:1px solid #ddd}',
+    'button{font-size:13px;padding:6px 16px;margin-left:8px}#run{background:#cc0000;color:#fff;border:0;border-radius:4px}',
+    '.sec td{background:#fafafa;font-weight:bold}</style>');
+  h.push('<div class="note">今月を <b>' + esc_(info.fromLabel) + '</b> から <b>' + esc_(info.toLabel) + '</b> に進めます。',
+    '年月の見出しはすべて1か月進み、処理前の今月（N列）の値は「実績」として確定して先月（M列）に入ります。</div>');
+  if (early) h.push('<div class="warn">カレンダー上の今月（' + esc_(ymLabel_(info.calendar)) + '）より先の月に進めようとしています。月が替わってから実行するのが通常です。</div>');
+
+  h.push('<h3>1. 月初残高（' + esc_(info.toLabel) + '初時点の実際の残高、円）</h3>');
+  h.push('<div class="note">口座ごとに、今の時点の残高を入力してください。シミュレーター上の見込み（現金・預金の合計）：<b>',
+    Number(info.estimate).toLocaleString('ja-JP') + ' 円</b></div>');
+  h.push('<table><tr><th>科目</th><th>口座・項目</th><th class="n">処理前の値</th><th class="n">月初残高（円）</th></tr>');
+  info.openings.forEach(function (o, i) {
+    h.push('<tr><td>' + esc_(o.account) + '</td><td>' + esc_(o.name) + (o.included ? '' : '（計上✗）') + '</td><td class="n">' +
+      Number(o.amount).toLocaleString('ja-JP') + '</td><td class="n"><input type="number" step="1" id="op' + i + '" value="' + o.amount + '"></td></tr>');
+  });
+  h.push('</table>');
+
+  h.push('<h3>2. 新しい最終月（' + esc_(info.lastLabel) + '）の値（' + esc_(info.unit) + '）</h3>');
+  h.push('<div class="note">各項目のルール（固定額・人件費・連動・比率など）から推計した値です。必要な行だけ直してください（直した値は「上書き」として保存されます）。自動計算の行は参考表示です。</div>');
+  h.push('<table><tr><th>区分</th><th>科目</th><th>項目</th><th class="n">' + esc_(info.lastLabel) + '</th></tr>');
+  var sec = '';
+  info.last.forEach(function (x, i) {
+    if (x.section !== sec) { sec = x.section; h.push('<tr class="sec"><td colspan="4">' + esc_(sec) + '</td></tr>'); }
+    h.push('<tr><td>' + (x.kind === 'gen' ? '連動' : x.kind === 'sys' ? '自動計算' : '明細項目') + '</td><td>' + esc_(x.account) + '</td><td>' + esc_(x.name) + '</td><td class="n">' +
+      (x.editable ? '<input type="number" step="any" id="ls' + i + '" value="' + x.value + '">' : Number(x.value).toLocaleString('ja-JP')) + '</td></tr>');
+  });
+  h.push('</table>');
+  h.push('<div class="btns"><span id="msg" class="note"></span><button onclick="google.script.host.close()">キャンセル</button><button id="run" onclick="run()">月初処理を実行</button></div>');
+  h.push('<script>var INFO=' + JSON.stringify(info).replace(/</g, '\\u003c') + ';',
+    'function run(){var b=document.getElementById("run");b.disabled=true;document.getElementById("msg").textContent="処理中…（30秒ほどかかります）";',
+    'var p={from:INFO.from,openings:[],last:[]};',
+    'for(var i=0;i<INFO.openings.length;i++){var v=document.getElementById("op"+i).value;if(v===""){alert("月初残高を入力してください："+INFO.openings[i].name);b.disabled=false;return;}p.openings.push({key:INFO.openings[i].key,amount:Number(v)});}',
+    'for(var j=0;j<INFO.last.length;j++){var e=document.getElementById("ls"+j);if(!e)continue;var w=e.value;if(w!==""&&Number(w)!==INFO.last[j].value)p.last.push({key:INFO.last[j].key,value:Number(w)});}',
+    'google.script.run.withSuccessHandler(function(m){alert(m);google.script.host.close();}).withFailureHandler(function(e){alert(e.message||e);b.disabled=false;document.getElementById("msg").textContent="";}).applyMonthStart(p);}',
+    '</script>');
+  return h.join('');
+}
+
+/** ダイアログの「月初処理を実行」から呼ばれる */
+function applyMonthStart(p) {
+  var ss = SpreadsheetApp.getActive();
+  var lock = LockService.getDocumentLock();
+  if (!lock.tryLock(60000)) throw new Error('再計算が実行中です。少し待ってからもう一度実行してください');
+  try {
+    captureGridEdits_(ss);
+    var R = CFEngine.compute(loadData_(ss));
+    if (R.base !== p.from) throw new Error('すでに月初処理が行われています（今月：' + ymLabel_(R.base) + '）');
+    var now = R.months[1], next = CFEngine.addMonths(R.base, 1), S = R.params.displayUnit || 1;
+    var user = userEmail_(null);
+
+    // 1) 今月の値を実績として確定（既にある実績との差額を追加）
+    var actual = {};
+    R.long.forEach(function (x) { if (x.ym === now && x.source === '実績') actual[x.key] = (actual[x.key] || 0) + x.amount; });
+    var freeze = [];
+    R.rows.forEach(function (r) {
+      if (!freezableRow_(r)) return;
+      var delta = Math.round(r.values[1] - (actual[r.key] || 0));
+      if (delta !== 0) freeze.push({ key: r.key, kind: '実績', ym: now, amount: delta, memo: '月初処理：' + ymLabel_(now) + 'の値を実績として確定' });
+    });
+    appendDetails_(ss, freeze, user);
+
+    // 2) 月初残高
+    updateItems_(ss, (p.openings || []).map(function (o) { return { id: String(o.key), header: '金額（税抜）', value: Math.round(Number(o.amount)) }; }));
+
+    // 3) 基準月を進める
+    setBaseMonth_(ss, next);
+
+    // 4) 新しい最終月の値を直した行は「上書き」として保存
+    var lastYm = CFEngine.addMonths(next, CFEngine.WINDOW - 2);
+    var changes = (p.last || []).filter(function (x) { return isFinite(Number(x.value)); })
+      .map(function (x) { return { key: String(x.key), ym: lastYm, value: Math.round(Number(x.value) * S) }; });
+    if (changes.length) applyOverrides_(ss, changes, user);
+
+    logMonthStart_(ss, user, p.from, next, freeze.length, changes.length);
+    recalc_();
+    PropertiesService.getDocumentProperties().deleteProperty('dirty');
+    return '月初処理が完了しました。\n\n今月：' + ymLabel_(next) + '\n実績として確定した行：' + freeze.length + ' 行\n最終月を直した行：' + changes.length + ' 行';
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 明細シートに行を追加する（list: {key, kind, ym, amount, memo}） */
+function appendDetails_(ss, list, user) {
+  if (!list.length) return;
+  var sh = ss.getSheetByName(SHEET.DETAIL);
+  var values = sh.getDataRange().getValues();
+  var width = values[0].length, H = headerIndex_(values[0]), now = new Date();
+  var rows = list.map(function (x) {
+    var row = [];
+    for (var i = 0; i < width; i++) row.push('');
+    row[H['明細ID']] = newDetailId_();
+    row[H['項目ID']] = x.key;
+    row[H['種別']] = x.kind;
+    row[H['入出金月']] = x.ym;
+    row[H['金額（税抜）']] = x.amount;
+    row[H['摘要']] = x.memo;
+    row[H['登録者']] = user;
+    row[H['登録日時']] = now;
+    return row;
+  });
+  var start = sh.getLastRow() + 1;
+  ensureSize_(sh, start + rows.length, width);
+  sh.getRange(start, H['入出金月'] + 1, rows.length, 1).setNumberFormat('@');
+  sh.getRange(start, 1, rows.length, width).setValues(rows);
+}
+
+function logMonthStart_(ss, user, from, to, nFreeze, nOver) {
+  var sh = ss.getSheetByName(SHEET.LOG);
+  if (!sh) return;
+  var r = sh.getLastRow() + 1;
+  ensureSize_(sh, r, 6);
+  sh.getRange(r, 1, 1, 6).setValues([[new Date(), user, '月初処理', from + ' → ' + to, '実績確定 ' + nFreeze + ' 行', '最終月の上書き ' + nOver + ' 行']]);
 }
 
 // ================================================================ シミュレーター上の直接入力

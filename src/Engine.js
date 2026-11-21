@@ -656,10 +656,11 @@ var CFEngine = (function () {
     var cumEq = 0, cumDebt = 0;
     for (var j = 0; j < WINDOW; j++) {
       net.push(inflow[j] - outflow[j]);
+      // 月初残高＝今月初（＝先月末）の実際の残高。先月の入出金はこの残高に反映済みなので積み上げない
       opening.push(j === 0 ? opening0 : closing[j - 1]);
-      closing.push(opening[j] + net[j]);              // 現金・預金の月末残高
+      closing.push(j === 0 ? opening0 : opening[j] + net[j]); // 現金・預金の月末残高（先月の列＝先月末＝今月初）
       fc.push(closing[j] + cashEq[j]);                 // 正味フリーキャッシュ＝現金・預金＋現金同等物
-      cumEq += equityIn[j]; cumDebt += debtIn[j];
+      if (j > 0) { cumEq += equityIn[j]; cumDebt += debtIn[j]; }
       fcExEquity.push(fc[j] - cumEq);
       fcExEquityDebt.push(fc[j] - cumEq - cumDebt);
       inflowExEquity.push(inflow[j] - equityIn[j]);

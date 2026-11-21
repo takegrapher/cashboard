@@ -58,6 +58,16 @@ function makeSheet(name) {
       return rg;
     },
     getDataRange: function () { return this.getRange(1, 1, Math.max(1, this.getLastRow()), Math.max(1, this.getLastColumn())); },
+    setRowHeight: function (r, h) { this.rowHeights = this.rowHeights || {}; this.rowHeights[r] = h; },
+    images: [],
+    getImages: function () { return this.images.slice(); },
+    insertImage: function (blob, c, r) { var self = this, im = { blob: blob, col: c, row: r, alt: '', script: '' };
+      im.setAltTextTitle = function (t) { im.alt = t; return im; }; im.getAltTextTitle = function () { return im.alt; };
+      im.setAltTextDescription = function () { return im; }; im.setWidth = function (w) { im.w = w; return im; }; im.setHeight = function (h) { im.h = h; return im; };
+      im.assignScript = function (f) { im.script = f; return im; };
+      im.getAnchorCell = function () { return { getRow: function () { return im.row; }, getColumn: function () { return im.col; } }; };
+      im.remove = function () { self.images = self.images.filter(function (x) { return x !== im; }); };
+      self.images.push(im); return im; },
     setFrozenRows: function () {}, setFrozenColumns: function () {}, setColumnWidth: function () {}, setColumnWidths: function () {}, hideColumns: function () {}, showColumns: function () {},
     getCharts: function () { return this.charts.slice(); }, removeChart: function (c) { this.charts = this.charts.filter(function (x) { return x !== c; }); }, insertChart: function (c) { this.charts.push(c); },
     newChart: function () { var spec = { options: {} }, b = {}; ['setChartType', 'addRange', 'setNumHeaders', 'setPosition', 'setTransposeRowsAndColumns'].forEach(function (m) { b[m] = function (x) { spec[m] = Array.prototype.slice.call(arguments); return b; }; }); b.setOption = function (k, v) { spec.options[k] = v; return b; }; b.build = function () { return spec; }; return b; },
@@ -87,6 +97,8 @@ var ctx = {
     GroupControlTogglePosition: { BEFORE: 'BEFORE' }
   },
   Utilities: {
+    newBlob: function (bytes, type, name) { return { bytes: bytes, type: type, name: name }; },
+    base64Decode: function (s) { return Buffer.from(s, 'base64'); },
     formatDate: function (d, tz, f) { var y = d.getFullYear(), m = ('0' + (d.getMonth() + 1)).slice(-2); return f === 'yyyy-MM' ? y + '-' + m : y + '' + m + '01000000'; },
     getUuid: function () { return Math.random().toString(16).slice(2) + 'abcd'; }
   },
@@ -95,10 +107,10 @@ var ctx = {
   ScriptApp: { getProjectTriggers: function () { return []; }, newTrigger: function (h) { var t = { forSpreadsheet: function () { return t; }, onEdit: function () { return t; }, timeBased: function () { return t; }, everyMinutes: function () { return t; }, create: function () { triggers.push(h); } }; return t; } },
   Session: { getActiveUser: function () { return { getEmail: function () { return 'tester@example.com'; } }; } },
   Charts: { ChartType: { LINE: 'LINE', COLUMN: 'COLUMN', COMBO: 'COMBO' } },
-  HtmlService: {}
+  HtmlService: { createHtmlOutput: function (h) { var o = { html: h }; o.setWidth = function () { return o; }; o.setHeight = function () { return o; }; return o; } }
 };
 vm.createContext(ctx);
-['Engine.js', 'Schema.js', 'Sample.js', 'Code.js'].forEach(function (f) {
+['Engine.js', 'Schema.js', 'Sample.js', 'Logo.js', 'Code.js'].forEach(function (f) {
   vm.runInContext(fs.readFileSync(path.join(src, f), 'utf8'), ctx, { filename: f });
 });
 console.log('  ok  構文チェック（4ファイル）');
@@ -153,11 +165,12 @@ function colLetter(c) { var s = ''; while (c > 0) { var m = (c - 1) % 26; s = St
 console.log('  ok  入金合計・出金合計：大分類→中分類（SUMIFで計上✔のみ）→明細の数式構造がエンジンの合計と一致（千円表示）');
 
 var fcF = cell(findKey('#fc'), MC + 2);
-assert.ok(/SUM\(\$M\d+:O\d+\)/.test(fcF), '正味FCが累計式でない: ' + fcF);
+assert.ok(/SUM\(\$N\d+:O\d+\)/.test(fcF), '正味FCが今月からの累計式でない: ' + fcF);
+assert.ok(!/SUM/.test(cell(findKey('#fc'), MC)), '先月の正味FCは月初残高＋現金同等物のみ: ' + cell(findKey('#fc'), MC));
 assert.ok(/^=\(\$M\$\d+(\+\$M\$\d+)*\)/.test(fcF), '正味FCが月初残高を参照していない: ' + fcF);
 assert.strictEqual(cell(findKey('#burn'), MC), '');
 assert.strictEqual(cell(findKey('#burn'), MC + 3), '=(N7*0.8+O7*0.9+P7*1)/2.7');
-assert.ok(/^=O4-\(SUM\(\$M\d+:O\d+\)(\+SUM\(\$M\d+:O\d+\))*\)$/.test(cell(findKey('#fcEq'), MC + 2)), cell(findKey('#fcEq'), MC + 2));
+assert.ok(/^=O4-\(SUM\(\$N\d+:O\d+\)(\+SUM\(\$N\d+:O\d+\))*\)$/.test(cell(findKey('#fcEq'), MC + 2)), cell(findKey('#fcEq'), MC + 2));
 console.log('  ok  正味FC（月初残高＋入金累計−出金累計＋現金同等物）・burn rate（加重平均）・出資除く（累計控除）の数式');
 
 assert.ok(gs.checkboxes.length > 20 && gs.groups.length > 10 && gs.merges.length === 5);
@@ -339,4 +352,64 @@ console.log('  ok  月初残高の口座行に入力すると項目の金額（�
 var log = sheets['変更ログ'].getLastRow();
 assert.ok(log >= 3);
 console.log('  ok  変更ログに記録');
+
+// ---- ロゴ（C1、クリックで再計算）・アプリ名
+var logos = gs.getImages().filter(function (im) { return im.alt === 'cashboard_logo'; });
+assert.strictEqual(logos.length, 1);
+assert.ok(logos[0].row === 1 && logos[0].col === 3 && logos[0].script === 'menuRecalc');
+assert.ok(logos[0].blob.type === 'image/jpeg' && logos[0].blob.bytes.length > 5000);
+assert.strictEqual(cell(1, 3), '');                                   // C1 に文字は入れない
+ctx.menuRebuild();                                                    // レイアウトを作り直しても1つだけ
+assert.strictEqual(gs.getImages().filter(function (im) { return im.alt === 'cashboard_logo'; }).length, 1);
+assert.strictEqual(vm.runInContext('APP_NAME', ctx), 'cashboard');
+console.log('  ok  C1 にロゴ画像（クリックで再計算）。作り直しても重複しない。メニュー名は cashboard');
+
+// ---- 基準月：空欄なら最初の再計算で今日の月に固定される
+function paramValue(key) { var v = sheets['パラメータ'].getDataRange().getValues(); for (var i = 1; i < v.length; i++) if (v[i][0] === key) return v[i][1]; return null; }
+var base0 = compute().base;
+assert.strictEqual(paramValue('基準月'), base0);
+console.log('  ok  基準月が空欄なら今日の月で固定（カレンダーが変わっても勝手に進まない）');
+
+// ---- 月初処理
+var info = vm.runInContext('monthStartInfo_()', ctx);
+var next = vm.runInContext('CFEngine.addMonths', ctx)(base0, 1);
+assert.strictEqual(info.from, base0);
+assert.strictEqual(info.to, next);
+assert.ok(info.openings.length === 2 && info.openings[0].key === 'K01');
+assert.ok(info.last.some(function (x) { return x.key === 'I040' && x.editable; }));
+assert.ok(info.last.some(function (x) { return x.kind === 'sys' && !x.editable; }));
+var html = vm.runInContext('monthStartHtml_', ctx)(info);
+assert.ok(/月初処理を実行/.test(html) && /applyMonthStart/.test(html));
+var before = compute();
+var nowVals = {};
+before.rows.forEach(function (r) { nowVals[r.key] = r.values[1]; });
+var rentLast = info.last.filter(function (x) { return x.key === 'I040'; })[0];
+var msg = ctx.applyMonthStart({ from: base0, openings: [{ key: 'K01', amount: 61234567 }, { key: 'K02', amount: 400000 }],
+  last: [{ key: 'I040', value: rentLast.value + 50 }] });
+assert.ok(/完了/.test(msg), msg);
+var after = compute();
+assert.strictEqual(after.base, next);
+assert.strictEqual(paramValue('基準月'), next);
+assert.strictEqual(after.months[0], before.months[1]);                  // 表が1か月左にずれる
+assert.strictEqual(cell(2, MC), ymLabel(after.months[0]));             // M2〜の年月が＋1か月
+assert.strictEqual(cell(2, MC + 18), ymLabel(after.months[18]));
+['I040', 'I050', 'I020', 'L:R02:I020'].forEach(function (k) {         // 新しい先月（M列）＝処理前の今月（N列）
+  var r = after.rows.filter(function (x) { return x.key === k; })[0];
+  assert.strictEqual(r.values[0], nowVals[k], k);
+  assert.strictEqual(r.sources[0], '実績', k);
+});
+assert.strictEqual(cell(findKey('item:I040'), MC), nowVals['I040'] / 1000);
+assert.strictEqual(after.totals.opening[0], 61634567);                 // 入力した月初残高
+assert.strictEqual(cell(findKey('open:K01'), MC), 61234.567);
+var rentAfter = after.rows.filter(function (x) { return x.key === 'I040'; })[0];
+assert.strictEqual(rentAfter.values[18], (rentLast.value + 50) * 1000); // 最終月を直した値＝上書き
+assert.strictEqual(rentAfter.sources[18], '上書き');
+var saas = after.rows.filter(function (x) { return x.key === 'I050'; })[0];
+assert.ok(saas.values[18] > 0 && saas.sources[18] !== '上書き');       // 直していない行はルールで推計
+assert.throws(function () { ctx.applyMonthStart({ from: base0, openings: [], last: [] }); }, /すでに月初処理/);
+console.log('  ok  月初処理：表が1か月進み、旧今月の値が先月（実績）に、月初残高は入力値、最終月はルール推計＋直した行は上書き');
+var compute2 = compute();
+ctx.menuRecalc();
+assert.strictEqual(compute().totals.fc[18], compute2.totals.fc[18]);
+console.log('  ok  月初処理のあとの再計算で値が変わらない（差分取り込みが誤検出しない）');
 console.log('\nall passed');

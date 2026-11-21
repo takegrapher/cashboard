@@ -170,10 +170,11 @@ test('中間納付回数のパラメータ指定（3回）', function () {
   assert.strictEqual(at(R2, 'SYS:消費税納付', '2027-02'), 600000);
 });
 
-test('残高の通算：月末＝月初＋入金−出金、翌月初＝前月末（月初残高＝口座項目の合計）', function () {
+test('残高の通算：月初残高＝今月初の残高（先月の列の月末）、今月以降は 月末＝月初＋入金−出金', function () {
   var T = R.totals;
+  assert.strictEqual(T.closing[0], T.opening[0]);                 // 先月の入出金は月初残高に反映済み
   for (var i = 0; i < 19; i++) {
-    assert.strictEqual(T.closing[i], T.opening[i] + T.inflow[i] - T.outflow[i]);
+    if (i) assert.strictEqual(T.closing[i], T.opening[i] + T.inflow[i] - T.outflow[i]);
     assert.strictEqual(T.fc[i], T.closing[i] + T.cashEq[i]);
     if (i) assert.strictEqual(T.opening[i], T.closing[i - 1]);
   }
